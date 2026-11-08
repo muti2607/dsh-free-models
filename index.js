@@ -12,13 +12,23 @@
 
 const LOG_PREFIX = '[free-models]'
 
-/** 预置渠道：pollinations 的 OpenAI 兼容端点，无需 Key。 */
+/**
+ * 预置渠道目录。
+ *
+ * `keyless: true` 的会直接注册（实测可用）；其余只作为「填 key 即开」的模板，
+ * 不注册成渠道——免得选择器里塞满一按就 401 的死条目。
+ * 实测（2026-11-08，国内直连）：只有 pollinations 真正免密钥；
+ * airforce / chatanywhere 返回 401，llm7 / freegpt / aicode 连接超时，
+ * binjie / naga / gpt-load 已失效，openai-hk 502。
+ */
 const BUILTIN_PROVIDERS = [
   {
     id: 'pollinations',
     name: 'Pollinations (免密钥)',
     baseUrl: 'https://text.pollinations.ai/openai',
     apiKey: '',
+    keyless: true,
+    website: 'https://text.pollinations.ai',
     models: [
       { id: 'openai-fast', name: 'OpenAI Fast (Pollinations)', contextWindow: 128000, maxOutputTokens: 8192 },
       { id: 'openai', name: 'OpenAI (Pollinations)', contextWindow: 128000, maxOutputTokens: 8192 },
@@ -26,23 +36,105 @@ const BUILTIN_PROVIDERS = [
   },
 ]
 
-/** 把配置里的渠道与预置渠道合并（同名以配置为准）。 */
+/** 需要用户自己填 Key 的免费额度渠道（只做模板，不注册）。 */
+const PRESET_TEMPLATES = [
+  {
+    id: 'groq', name: 'Groq (免费额度)',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    website: 'https://console.groq.com/keys',
+    models: [
+      { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B (Groq)', contextWindow: 128000, maxOutputTokens: 32768 },
+      { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B (Groq)', contextWindow: 128000, maxOutputTokens: 8192 },
+    ],
+  },
+  {
+    id: 'cerebras', name: 'Cerebras (免费额度)',
+    baseUrl: 'https://api.cerebras.ai/v1',
+    website: 'https://cloud.cerebras.ai',
+    models: [
+      { id: 'llama-3.3-70b', name: 'Llama 3.3 70B (Cerebras)', contextWindow: 128000, maxOutputTokens: 32768 },
+      { id: 'qwen-3-32b', name: 'Qwen 3 32B (Cerebras)', contextWindow: 128000, maxOutputTokens: 16384 },
+    ],
+  },
+  {
+    id: 'gemini', name: 'Google Gemini (免费额度)',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    website: 'https://aistudio.google.com/apikey',
+    models: [
+      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextWindow: 1000000, maxOutputTokens: 65536 },
+      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', contextWindow: 1000000, maxOutputTokens: 65536 },
+    ],
+  },
+  {
+    id: 'siliconflow', name: '硅基流动 (部分模型免费)',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    website: 'https://cloud.siliconflow.cn/account/ak',
+    models: [
+      { id: 'Qwen/Qwen3-8B', name: 'Qwen3 8B (免费)', contextWindow: 32768, maxOutputTokens: 8192 },
+      { id: 'THUDM/glm-4-9b-chat', name: 'GLM-4-9B (免费)', contextWindow: 32768, maxOutputTokens: 8192 },
+    ],
+  },
+  {
+    id: 'modelscope', name: '魔搭 ModelScope (每日免费)',
+    baseUrl: 'https://api-inference.modelscope.cn/v1',
+    website: 'https://modelscope.cn/my/myaccesstoken',
+    models: [
+      { id: 'Qwen/Qwen3-8B', name: 'Qwen3 8B (ModelScope)', contextWindow: 32768, maxOutputTokens: 8192 },
+    ],
+  },
+  {
+    id: 'openrouter', name: 'OpenRouter (:free 模型免费)',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    website: 'https://openrouter.ai/keys',
+    models: [
+      { id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3 70B free', contextWindow: 128000, maxOutputTokens: 16384 },
+      { id: 'google/gemini-2.0-flash-exp:free', name: 'Gemini 2.0 Flash free', contextWindow: 1000000, maxOutputTokens: 8192 },
+    ],
+  },
+  {
+    id: 'ollama', name: '本地 Ollama (完全免费)',
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    website: 'https://ollama.com',
+    models: [
+      { id: 'qwen3:8b', name: 'Qwen3 8B (本地)', contextWindow: 32768, maxOutputTokens: 8192 },
+    ],
+  },
+]
+
+/**
+ * 合并渠道：
+ *  · 免密钥的预置渠道直接注册；
+ *  · 配置里给了 apiKey 的模板渠道也注册（预置模板自动补全 baseUrl / models）；
+ *  · 配置项还可以是全新的自定义端点。
+ */
 function resolveProviders(cfg) {
   const custom = Array.isArray(cfg.providers) ? cfg.providers : []
   const byId = new Map()
-  for (const p of BUILTIN_PROVIDERS) byId.set(p.id, { ...p, builtin: true })
+  for (const p of BUILTIN_PROVIDERS) byId.set(p.id, { ...p, builtin: true, active: true })
   for (const raw of custom) {
-    if (!raw || typeof raw !== 'object' || !raw.id || !raw.baseUrl) continue
-    byId.set(String(raw.id), {
-      id: String(raw.id),
-      name: String(raw.name || raw.id),
-      baseUrl: String(raw.baseUrl).replace(/\/+$/, ''),
-      apiKey: String(raw.apiKey || ''),
-      models: Array.isArray(raw.models) ? raw.models.filter((m) => m && m.id) : [],
-      builtin: false,
+    if (!raw || typeof raw !== 'object' || !raw.id) continue
+    const id = String(raw.id)
+    const preset = PRESET_TEMPLATES.find((t) => t.id === id)
+    const key = String(raw.apiKey || '').trim()
+    // 预置模板没给 key 就跳过，避免选择器里出现一按就 401 的死条目
+    if (preset && !key) continue
+    const baseUrl = String(raw.baseUrl || (preset && preset.baseUrl) || '').replace(/\/+$/, '')
+    if (!baseUrl) continue
+    const existing = byId.get(id)
+    byId.set(id, {
+      id,
+      name: String(raw.name || (preset && preset.name) || (existing && existing.name) || id),
+      baseUrl,
+      apiKey: key,
+      models: Array.isArray(raw.models) && raw.models.length
+        ? raw.models.filter((m) => m && m.id)
+        : (preset ? preset.models : (existing ? existing.models : [])),
+      website: String((preset && preset.website) || (existing && existing.website) || ''),
+      builtin: !!existing,
+      active: true,
     })
   }
-  return [...byId.values()]
+  return [...byId.values()].filter((p) => p.active)
 }
 
 function num(v) {
@@ -275,7 +367,8 @@ export function apply(ctx, config) {
 
   // 自检路由：GET /api/free-models/models —— 确认渠道与模型确实挂上了
   ctx.inject(['webServer'], (scoped) => {
-    const server = scoped && scoped.webServer ? scoped.webServer : ctx.get('webServer')
+    const server = scoped && scoped.webServer ? scoped.webServer
+      : (typeof ctx.get === 'function' ? ctx.get('webServer') : null)
     if (!server || typeof server.register !== 'function') return () => {}
     return server.register({
       kind: 'exact',
@@ -283,7 +376,7 @@ export function apply(ctx, config) {
       handler: (_req, res) => {
         const body = {
           ok: true,
-          providers: providers.map((p) => ({
+          active: providers.map((p) => ({
             id: p.id,
             name: p.name,
             baseUrl: p.baseUrl,
@@ -291,6 +384,9 @@ export function apply(ctx, config) {
             builtin: !!p.builtin,
             models: p.models.map((m) => ({ id: m.id, provider: p.id, name: m.name || m.id, contextWindow: num(m.contextWindow) })),
           })),
+          // 可一键开启的免费渠道：在 config.providers 里填 apiKey 即会激活
+          available: PRESET_TEMPLATES.filter((t) => !providers.some((p) => p.id === t.id))
+            .map((t) => ({ id: t.id, name: t.name, website: t.website, baseUrl: t.baseUrl, modelCount: t.models.length })),
         }
         const text = JSON.stringify(body)
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })

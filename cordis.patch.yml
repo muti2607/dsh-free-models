@@ -1,19 +1,21 @@
 # dsh-free-models bundle patch.
 #
-# 插入 Host 半身。config.providers 可留空（只用内置 pollinations），
-# 也可以追加任意 OpenAI 兼容端点：
+# 免密钥渠道（pollinations）会自动注册，无需任何配置。
+# 要开启更多免费渠道，只需在 config.providers 里写 id + apiKey，
+# baseUrl / 模型列表由插件内置模板自动补全：
 #
 #   config:
 #     providers:
-#       - id: groq
-#         name: Groq
-#         baseUrl: https://api.groq.com/openai/v1
-#         apiKey: gsk_xxx
-#         models:
-#           - id: llama-3.3-70b-versatile
-#             name: Llama 3.3 70B (Groq)
-#             contextWindow: 128000
-#             maxOutputTokens: 8192
+#       - { id: groq,        apiKey: gsk_xxx }   # console.groq.com/keys
+#       - { id: cerebras,    apiKey: csk_xxx }   # cloud.cerebras.ai
+#       - { id: gemini,      apiKey: AIza_xxx }  # aistudio.google.com/apikey
+#       - { id: siliconflow, apiKey: sk_xxx }    # cloud.siliconflow.cn/account/ak
+#       - { id: modelscope,  apiKey: ms_xxx }    # modelscope.cn/my/myaccesstoken
+#       - { id: openrouter,  apiKey: sk-or-xxx } # openrouter.ai/keys
+#       - { id: ollama,      apiKey: ollama }    # 本地 Ollama，随便填
+#
+# 也可以写全新端点（自定义 baseUrl + models），见 README。
+# 自检：GET /api/free-models/models 里 available 列出所有可开启的渠道。
 - insert:
     - id: free-models
       name: dsh-free-models

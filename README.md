@@ -16,44 +16,74 @@
 curl http://127.0.0.1:<dsh 端口>/api/free-models/models
 ```
 
-## 加更多渠道（填 Key 即可）
+## 内置 7 个免费渠道模板
 
-在 profile 的 `cordis.patch.yml` 里覆盖 `free-models` 的 `config`：
+不用改代码、不用手写 baseUrl，**只要填一个 key**：
+
+| id | 渠道 | 免费说明 | 申请 Key |
+| --- | --- | --- | --- |
+| `groq` | Groq | 免费额度，速度极快 | console.groq.com/keys |
+| `cerebras` | Cerebras | 免费额度，推理极快 | cloud.cerebras.ai |
+| `gemini` | Google Gemini | 每日免费额度 | aistudio.google.com/apikey |
+| `siliconflow` | 硅基流动 | 部分模型永久免费、国内直连 | cloud.siliconflow.cn/account/ak |
+| `modelscope` | 魔搭 | 每日 2000 次免费 | modelscope.cn/my/myaccesstoken |
+| `openrouter` | OpenRouter | `:free` 后缀模型免费 | openrouter.ai/keys |
+| `ollama` | 本地 Ollama | 完全免费、不联网 | 装好 Ollama，key 随便填 |
+
+在 profile 的 `cordis.patch.yml` 覆盖 `free-models` 的 `config`：
 
 ```yaml
 - id: free-models
   name: dsh-free-models
   config:
     providers:
-      - id: groq
-        name: Groq
-        baseUrl: https://api.groq.com/openai/v1
-        apiKey: gsk_xxx
-        models:
-          - id: llama-3.3-70b-versatile
-            name: Llama 3.3 70B (Groq)
-            contextWindow: 128000
-            maxOutputTokens: 8192
-
-      - id: siliconflow
-        name: 硅基流动
-        baseUrl: https://api.siliconflow.cn/v1
-        apiKey: sk-xxx
-        models:
-          - id: Qwen/Qwen3-8B
-            name: Qwen3 8B (硅基流动)
-            contextWindow: 32768
+      - { id: groq,        apiKey: gsk_xxxxxxxx }
+      - { id: siliconflow, apiKey: sk_xxxxxxxx }
+      - { id: ollama,      apiKey: ollama }
 ```
 
-只要对方是 **OpenAI Chat Completions 兼容**端点，就能这样接。常见的免费额度渠道：
+> 注意：`groq` / `cerebras` 等是预置模板 id，别写成自定义名，
+> 那样就需要自己提供 `baseUrl` 和 `models`。
 
-- Groq — `https://api.groq.com/openai/v1`（免费额度，速度极快）
-- Cerebras — `https://api.cerebras.ai/v1`
-- Google Gemini — `https://generativelanguage.googleapis.com/v1beta/openai`
-- 硅基流动 SiliconFlow — `https://api.siliconflow.cn/v1`（部分模型免费）
-- 魔搭 ModelScope — `https://api-inference.modelscope.cn/v1`
-- 本地 Ollama — `http://127.0.0.1:11434/v1`（apiKey 随便填）
-- OpenRouter — `https://openrouter.ai/api/v1`（`:free` 后缀模型）
+**没填 key 的渠道不会注册**——避免选择器里塞满一按就 401 的死条目。
+填了 key 的渠道，baseUrl 和模型列表由插件自动补全。
+
+查看当前可开启哪些：
+
+```bash
+curl http://127.0.0.1:<dsh 端口>/api/free-models/models
+# { active: [...已启用的], available: [...可填 key 开启的，含申请地址] }
+```
+
+## 自定义端点
+
+只要是 **OpenAI Chat Completions 兼容**端点，都能这样接：
+
+```yaml
+    providers:
+      - id: my-provider
+        name: 我的渠道
+        baseUrl: https://example.com/v1
+        apiKey: sk_xxx            # 免密钥就留空
+        models:
+          - id: some-model
+            name: Some Model
+            contextWindow: 128000
+            maxOutputTokens: 8192
+```
+
+## 实测记录（2026-11-08，国内直连）
+
+| 端点 | 结果 |
+| --- | --- |
+| `text.pollinations.ai/openai` | ✅ 免密钥可用，已内置 |
+| `api.airforce` | ❌ 401 需订阅（模型列表 790 个） |
+| `api.chatanywhere.tech` | ❌ 401 需 Key |
+| `api.llm7.io` | ❌ 连接超时 |
+| `api.openai-hk.com` | ❌ 502 |
+| `api.binjie.fun` / `api.nagaai.com` / `api.gpt-load.com` | ❌ 已失效 |
+
+所以**真正免密钥、开箱即用的只有 pollinations**；其它免费额度都得自己申请一个 key。
 
 ## 已知限制
 

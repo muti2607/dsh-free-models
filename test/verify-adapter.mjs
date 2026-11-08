@@ -86,4 +86,26 @@ else {
 if (typeof dispose !== 'function') fail('apply 必须返回清理函数')
 dispose()
 
+// ---- 7. 预置模板：填了 key 才激活，没填不注册 ----
+{
+  const { apply: applyAgain } = await import('../index.js')
+  const collect = (cfg) => {
+    let ids = []
+    const ctx2 = {
+      logger: { info: () => {}, warn: () => {} },
+      llm: { registerAdapter(p) { ids = p; return { dispose() {} } } },
+      inject(d, cb) { cb(ctx2); return () => {} },
+      get(n) { return ctx2[n] },
+    }
+    applyAgain(ctx2, cfg)()
+    return ids
+  }
+  const withoutKey = collect({ providers: [{ id: 'groq', apiKey: '' }] })
+  if (withoutKey.includes('groq')) fail('没填 key 的模板不该注册成渠道')
+  const withKey = collect({ providers: [{ id: 'groq', apiKey: 'gsk_test' }] })
+  if (!withKey.includes('groq')) fail('填了 key 的模板应激活')
+  if (!withKey.includes('pollinations')) fail('免密钥渠道应始终存在')
+  if (withKey.length !== 2) fail('应为 pollinations + groq 两个渠道，实际 ' + JSON.stringify(withKey))
+}
+
 console.log(JSON.stringify({ ok: !process.exitCode }, null, 2))
