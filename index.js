@@ -10,7 +10,84 @@
  * 所有上游都按 OpenAI Chat Completions 协议（SSE 流式）。
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
 const LOG_PREFIX = '[free-models]'
+const execFileAsync = promisify(execFile)
+
+/** 只接受 http(s) 且无内嵌凭据的 URL，长度上限 2048。 */
+function safeExternalUrl(value) {
+  if (typeof value !== 'string' || value.length > 2048) return null
+  try {
+    const u = new URL(value.trim())
+    if (!['http:', 'https:'].includes(u.protocol) || !u.hostname || u.username || u.password) return null
+    return u.href
+  } catch { return null }
+}
+
+/** 用系统默认浏览器打开，OFM 同款实现（Windows 走 PowerShell Start-Process）。 */
+async function openExternal(value) {
+  const url = safeExternalUrl(value)
+  if (!url) return false
+  try {
+    if (process.platform === 'win32') {
+      const script = `Start-Process -FilePath '${url.replaceAll("'", "''")}' -ErrorAction Stop`
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows'
+      await execFileAsync(
+        path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+        ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+        { windowsHide: true, timeout: 10000 },
+      )
+    } else {
+      await execFileAsync(process.platform === 'darwin' ? '/usr/bin/open' : 'xdg-open', [url], { timeout: 10000 })
+    }
+    return true
+  } catch { return false }
+}
+
+/** 凭据落盘位置：$DSH_HOME/free-models/keys.json（不进 profile 配置、不进浏览器响应）。 */
+function keysFile() {
+  const envHome = String(process.env.DSH_HOME || '').trim()
+  const home = envHome || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, '.dsh') : '')
+  return home ? path.join(home, 'free-models', 'keys.json') : ''
+}
+
+function readKeys() {
+  const file = keysFile()
+  if (!file) return {}
+  try {
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const out = {}
+    for (const [k, v] of Object.entries(doc || {})) {
+      if (typeof v === 'string' && v.trim()) out[k] = v.trim()
+    }
+    return out
+  } catch { return {} }
+}
+
+function writeKeys(keys) {
+  const file = keysFile()
+  if (!file) throw new Error('无法确定 DSH_HOME，无法保存凭据')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const tmp = file + '.tmp'
+  fs.writeFileSync(tmp, JSON.stringify(keys, null, 2), 'utf8')
+  fs.renameSync(tmp, file)
+}
+
+/** 从落盘凭据里补齐预置模板的 key，避免把密钥写进 cordis.patch.yml。 */
+function withSavedKeys(custom) {
+  const saved = readKeys()
+  const merged = Array.isArray(custom) ? [...custom] : []
+  for (const [id, key] of Object.entries(saved)) {
+    if (!PRESET_TEMPLATES.some((t) => t.id === id)) continue
+    if (merged.some((p) => p && p.id === id && String(p.apiKey || '').trim())) continue
+    merged.push({ id, apiKey: key })
+  }
+  return merged
+}
 
 /**
  * 预置渠道目录。
@@ -261,7 +338,8 @@ function serializeMessages(messages) {
 
 export function apply(ctx, config) {
   const cfg = config && typeof config === 'object' ? config : {}
-  const providers = resolveProviders(cfg)
+  // 静态配置 + 设置页保存的 key（不进浏览器响应、不写 cordis.patch.yml）
+  let providers = resolveProviders({ ...cfg, providers: withSavedKeys(cfg.providers) })
   const logger = ctx.logger || console
 
   if (providers.length === 0) {
@@ -272,7 +350,7 @@ export function apply(ctx, config) {
   const adapter = {
     providerInfo(provider) {
       const found = providers.find((p) => p.id === provider)
-      return { id: provider || providers[0].id, name: found ? found.name : 'Free Models' }
+      return { id: provider || (providers[0] && providers[0].id) || 'free-models', name: found ? found.name : 'Free Models' }
     },
 
     // 失败补发一次即可：免费端点多是限流/超时，重试太多次只会放大调用量
@@ -356,44 +434,129 @@ export function apply(ctx, config) {
     yield* readSse(response, options.signal)
   }
 
-  let dispose = () => {}
+  // 注册/重注册：设置页保存 Key 后立即刷新渠道，不用重启 DSH
+  let llmRef = null
+  let registered = []
+  let handle = null
+
+  function mountAdapter() {
+    if (!llmRef || typeof llmRef.registerAdapter !== 'function') return false
+    // 逐个注册：某个 provider 名被别的插件占用时不连累其它渠道
+    const ok = []
+    const handles = []
+    for (const p of providers) {
+      try {
+        handles.push(llmRef.registerAdapter([p.id], adapter))
+        ok.push(p.id)
+      } catch (error) {
+        logger.warn?.(`${LOG_PREFIX} 渠道 ${p.id} 注册失败（可能已被占用），已跳过：${String((error && error.message) || error)}`)
+      }
+    }
+    if (handle) for (const h of handle) { try { h && h.dispose && h.dispose() } catch { /* ignore */ } }
+    handle = handles
+    registered = ok
+    try {
+      llmRef.registerConfigurableProviders?.(ok.map((id) => ({ provider: id, displayName: 'Free Models', settingsNs: id, settingsPath: [] })))
+    } catch { /* 可选能力 */ }
+    return ok.length > 0
+  }
+
   ctx.inject(['llm'], (scoped) => {
-    const llm = scoped && scoped.llm ? scoped.llm : ctx.get('llm')
-    if (!llm || typeof llm.registerAdapter !== 'function') return () => {}
-    const handle = llm.registerAdapter(providers.map((p) => p.id), adapter)
-    dispose = () => { try { handle && handle.dispose && handle.dispose() } catch { /* ignore */ } }
-    return dispose
+    llmRef = (scoped && scoped.llm) ? scoped.llm : (typeof ctx.get === 'function' ? ctx.get('llm') : null)
+    if (!llmRef || typeof llmRef.registerAdapter !== 'function') return () => {}
+    mountAdapter()
+    return () => {
+      if (handle) for (const h of handle) { try { h && h.dispose && h.dispose() } catch { /* ignore */ } }
+      handle = null
+    }
   })
 
-  // 自检路由：GET /api/free-models/models —— 确认渠道与模型确实挂上了
+  /** 当前状态（供设置页用），密钥永远不回传。 */
+  function status() {
+    return {
+      ok: true,
+      active: providers.filter((p) => registered.includes(p.id)).map((p) => ({
+        id: p.id, name: p.name, baseUrl: p.baseUrl,
+        needsKey: !!p.apiKey, keyless: !!p.keyless,
+        website: p.website || '',
+        configured: !!p.apiKey,
+        models: p.models.map((m) => ({ id: m.id, provider: p.id, name: m.name || m.id, contextWindow: num(m.contextWindow) })),
+      })),
+      available: PRESET_TEMPLATES.map((t) => {
+        const active = providers.some((p) => p.id === t.id)
+        return {
+          id: t.id, name: t.name, website: t.website, baseUrl: t.baseUrl,
+          modelCount: t.models.length, enabled: active,
+          // 只说「已保存」，不回传 key 本身
+          hasSavedKey: !!readKeys()[t.id],
+        }
+      }),
+    }
+  }
+
+  async function readJsonBody(req) {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const raw = Buffer.concat(chunks).toString('utf8')
+    return raw ? JSON.parse(raw) : {}
+  }
+
+  // 设置页 API：与 OFM 一样是插件自有的同源路由
   ctx.inject(['webServer'], (scoped) => {
     const server = scoped && scoped.webServer ? scoped.webServer
       : (typeof ctx.get === 'function' ? ctx.get('webServer') : null)
     if (!server || typeof server.register !== 'function') return () => {}
     return server.register({
-      kind: 'exact',
-      path: '/api/free-models/models',
-      handler: (_req, res) => {
-        const body = {
-          ok: true,
-          active: providers.map((p) => ({
-            id: p.id,
-            name: p.name,
-            baseUrl: p.baseUrl,
-            needsKey: !!p.apiKey,
-            builtin: !!p.builtin,
-            models: p.models.map((m) => ({ id: m.id, provider: p.id, name: m.name || m.id, contextWindow: num(m.contextWindow) })),
-          })),
-          // 可一键开启的免费渠道：在 config.providers 里填 apiKey 即会激活
-          available: PRESET_TEMPLATES.filter((t) => !providers.some((p) => p.id === t.id))
-            .map((t) => ({ id: t.id, name: t.name, website: t.website, baseUrl: t.baseUrl, modelCount: t.models.length })),
+      kind: 'prefix',
+      path: '/api/free-models',
+      handler: async (req, res) => {
+        const send = (code, body) => {
+          const text = JSON.stringify(body)
+          res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          res.end(text)
         }
-        const text = JSON.stringify(body)
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
-        res.end(text)
+        let pathname = '/'
+        try { pathname = new URL(String(req.url || '/'), 'http://localhost').pathname } catch { /* ignore */ }
+        const method = String(req.method || 'GET').toUpperCase()
+        try {
+          // 状态（含可开启渠道与申请地址）
+          if (method === 'GET' && (pathname === '/api/free-models/models' || pathname === '/api/free-models/status')) {
+            return send(200, status())
+          }
+          // 打开系统浏览器到申请 Key 页面
+          if (method === 'POST' && pathname === '/api/free-models/open-external') {
+            const body = await readJsonBody(req)
+            const tpl = PRESET_TEMPLATES.find((t) => t.id === String(body.id || ''))
+            const url = safeExternalUrl(body.url || (tpl && tpl.website))
+            if (!url) return send(400, { ok: false, error: 'bad-url' })
+            const opened = await openExternal(url)
+            return send(200, { ok: true, opened, url })
+          }
+          // 保存 Key：落盘 + 立即重注册，不需要改 YAML、不需要重启
+          if (method === 'POST' && pathname === '/api/free-models/keys') {
+            const body = await readJsonBody(req)
+            const id = String(body.id || '').trim()
+            const key = String(body.apiKey || '').trim()
+            if (!PRESET_TEMPLATES.some((t) => t.id === id)) return send(400, { ok: false, error: 'unknown-provider' })
+            const keys = readKeys()
+            if (key) keys[id] = key
+            else delete keys[id]
+            writeKeys(keys)
+            providers = resolveProviders({ ...cfg, providers: withSavedKeys(cfg.providers) })
+            const mounted = mountAdapter()
+            logger.info?.(`${LOG_PREFIX} 已${key ? '保存' : '移除'} ${id} 的凭据，重注册 ${registered.length} 个渠道`)
+            return send(200, { ok: true, mounted, ...status() })
+          }
+          return send(404, { ok: false, error: 'not-found' })
+        } catch (error) {
+          return send(500, { ok: false, error: String((error && error.message) || error) })
+        }
       },
     })
   })
 
-  return () => { try { dispose() } catch { /* ignore */ } }
+  return () => {
+    if (handle) for (const h of handle) { try { h && h.dispose && h.dispose() } catch { /* ignore */ } }
+    handle = null
+  }
 }

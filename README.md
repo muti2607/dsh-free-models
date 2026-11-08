@@ -4,11 +4,20 @@
 
 ## 装完就能用
 
+**设置 → 免费模型** 里就是全部操作界面，不用改 YAML：
+
+1. 点某渠道的「去申请」→ 自动打开系统浏览器到申请 Key 的网页
+2. 在网页登录、创建 Key、复制
+3. 粘回这一行的输入框，点「保存并启用」
+
+保存后 Host 会把密钥写进 `$DSH_HOME/free-models/keys.json`（只在本机、不进浏览器响应、
+不进 `cordis.patch.yml`），并**立即重新注册渠道**——模型选择器里马上出现，不用重启。
+
 内置一个真的不需要注册、不需要 Key 的渠道：
 
 | 渠道 | 模型 | 说明 |
 | --- | --- | --- |
-| Pollinations | `pollinations/openai-fast`、`pollinations/openai` | 公开端点，无 Key，有限流 |
+| Pollinations | `openai-fast`、`openai` | 公开端点，无 Key，有限流 |
 
 模型选择器里会出现对应条目，直接选即可。自检：
 
@@ -16,9 +25,9 @@
 curl http://127.0.0.1:<dsh 端口>/api/free-models/models
 ```
 
-## 内置 7 个免费渠道模板
+## 内置 7 个免费渠道模板（设置页一键登录）
 
-不用改代码、不用手写 baseUrl，**只要填一个 key**：
+不用改代码、不用手写 baseUrl，**设置页点「去申请」打开网页拿 Key，粘回来保存即生效**：
 
 | id | 渠道 | 免费说明 | 申请 Key |
 | --- | --- | --- | --- |
@@ -30,7 +39,10 @@ curl http://127.0.0.1:<dsh 端口>/api/free-models/models
 | `openrouter` | OpenRouter | `:free` 后缀模型免费 | openrouter.ai/keys |
 | `ollama` | 本地 Ollama | 完全免费、不联网 | 装好 Ollama，key 随便填 |
 
-在 profile 的 `cordis.patch.yml` 覆盖 `free-models` 的 `config`：
+## 高级：也可用配置直接写
+
+设置页是推荐方式（密钥落到 `$DSH_HOME/free-models/keys.json`，不进配置文件）。
+如果你更习惯写配置，也能在 `cordis.patch.yml` 里覆盖 `config.providers`：
 
 ```yaml
 - id: free-models

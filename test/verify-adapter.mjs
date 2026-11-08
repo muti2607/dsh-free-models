@@ -7,13 +7,17 @@ import { apply } from '../index.js'
 const fail = (m) => { console.error('FAIL: ' + m); process.exitCode = 1 }
 
 let registered = null
+const allRegistrations = []
 const fake = {
   logger: { info: () => {}, warn: () => {} },
   llm: {
+    // 插件会逐个渠道注册，收集全部；registered 保留第一个（主渠道）
     registerAdapter(providers, adapter) {
-      registered = { providers, adapter }
-      return { dispose() { registered = null } }
+      if (!registered) registered = { providers, adapter }
+      allRegistrations.push({ providers, adapter })
+      return { dispose() {} }
     },
+    registerConfigurableProviders() {},
   },
   inject(deps, cb) { cb(fake); return () => {} },
   get(name) { return fake[name] },
@@ -31,11 +35,12 @@ const dispose = apply(fake, {
   ],
 })
 
+const allProviderIds = allRegistrations.flatMap((r) => r.providers)
 if (!registered) fail('未注册适配器')
 else {
   const a = registered.adapter
-  if (!registered.providers.includes('pollinations')) fail('应包含内置 pollinations 渠道')
-  if (!registered.providers.includes('groq')) fail('应包含配置里的 groq 渠道')
+  if (!allProviderIds.includes('pollinations')) fail('应包含内置 pollinations 渠道')
+  if (!allProviderIds.includes('groq')) fail('应包含配置里的 groq 渠道')
 
   const models = await a.listModels()
   if (models.length !== 3) fail('模型数应为 3（pollinations 2 + groq 1），实际 ' + models.length)
@@ -90,10 +95,13 @@ dispose()
 {
   const { apply: applyAgain } = await import('../index.js')
   const collect = (cfg) => {
-    let ids = []
+    const ids = []
     const ctx2 = {
       logger: { info: () => {}, warn: () => {} },
-      llm: { registerAdapter(p) { ids = p; return { dispose() {} } } },
+      llm: {
+        registerAdapter(p) { ids.push(...p); return { dispose() {} } },
+        registerConfigurableProviders() {},
+      },
       inject(d, cb) { cb(ctx2); return () => {} },
       get(n) { return ctx2[n] },
     }
@@ -106,6 +114,70 @@ dispose()
   if (!withKey.includes('groq')) fail('填了 key 的模板应激活')
   if (!withKey.includes('pollinations')) fail('免密钥渠道应始终存在')
   if (withKey.length !== 2) fail('应为 pollinations + groq 两个渠道，实际 ' + JSON.stringify(withKey))
+}
+
+// ---- 8. 设置页 API：保存 Key 落盘后立即重注册 ----
+{
+  const os = await import('node:os')
+  const pathMod = await import('node:path')
+  const fsMod = await import('node:fs')
+  const home = fsMod.mkdtempSync(pathMod.join(os.tmpdir(), 'fm-keys-'))
+  const prevHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  try {
+    const { apply: applyAgain } = await import('../index.js')
+    const registeredIds = []
+    const routes = []
+    const ctx3 = {
+      logger: { info: () => {}, warn: () => {} },
+      llm: {
+        registerAdapter(p) { registeredIds.push(...p); return { dispose() {} } },
+        registerConfigurableProviders() {},
+      },
+      webServer: { register(r) { routes.push(r); return () => {} } },
+      inject(d, cb) { cb(ctx3); return () => {} },
+      get(n) { return ctx3[n] },
+    }
+    applyAgain(ctx3, {})
+    const route = routes.find((r) => r.path === '/api/free-models')
+    if (!route) fail('设置页 API 路由未注册')
+
+    const call = async (method, path, body) => {
+      let status = 0, out = ''
+      const req = {
+        method, url: path,
+        async *[Symbol.asyncIterator]() { if (body) yield Buffer.from(JSON.stringify(body)) },
+      }
+      await route.handler(req, {
+        writeHead(c) { status = c },
+        end(text) { out = String(text) },
+      })
+      return { status, body: JSON.parse(out) }
+    }
+
+    const before = await call('GET', '/api/free-models/status')
+    if (before.status !== 200 || !before.body.ok) fail('status 接口不对')
+    if (!Array.isArray(before.body.available) || before.body.available.length < 7) fail('应列出 7 个可开启渠道')
+
+    const saved = await call('POST', '/api/free-models/keys', { id: 'groq', apiKey: 'gsk_test_key' })
+    if (saved.status !== 200 || !saved.body.ok) fail('保存 Key 失败: ' + JSON.stringify(saved.body))
+    if (!registeredIds.includes('groq')) fail('保存后应立即重注册 groq 渠道')
+    const groq = saved.body.active.find((p) => p.id === 'groq')
+    if (!groq || !groq.configured) fail('保存后 groq 应显示为已配置')
+    // 密钥绝不能出现在任何响应里
+    if (JSON.stringify(saved.body).includes('gsk_test_key')) fail('响应里泄露了密钥')
+
+    const keys = JSON.parse(fsMod.readFileSync(pathMod.join(home, 'free-models', 'keys.json'), 'utf8'))
+    if (keys.groq !== 'gsk_test_key') fail('密钥未落盘')
+
+    const removed = await call('POST', '/api/free-models/keys', { id: 'groq', apiKey: '' })
+    if (removed.status !== 200 || removed.body.active.some((p) => p.id === 'groq')) fail('移除 Key 后应取消该渠道')
+    if (JSON.parse(fsMod.readFileSync(pathMod.join(home, 'free-models', 'keys.json'), 'utf8')).groq) fail('密钥未删除')
+  } finally {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+    fsMod.rmSync(home, { recursive: true, force: true })
+  }
 }
 
 console.log(JSON.stringify({ ok: !process.exitCode }, null, 2))

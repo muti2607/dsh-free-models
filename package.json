@@ -1,6 +1,6 @@
 {
   "name": "dsh-free-models",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "免密钥的免费模型接入：内置 pollinations，可通过配置添加任意 OpenAI 兼容端点（Groq / Cerebras / 硅基流动 / Ollama 等）。",
@@ -14,12 +14,18 @@
   "license": "MIT",
   "main": "./index.js",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
+    "client.js",
     "package.json",
     "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
     "README.md",
     "LICENSE",
     "test/*.mjs"
@@ -30,6 +36,11 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
     }
   }
 }
