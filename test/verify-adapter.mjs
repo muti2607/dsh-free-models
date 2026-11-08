@@ -39,11 +39,11 @@ else {
 
   const models = await a.listModels()
   if (models.length !== 3) fail('模型数应为 3（pollinations 2 + groq 1），实际 ' + models.length)
-  const fast = models.find((m) => m.id === 'pollinations/openai-fast')
-  if (!fast) fail('缺少 pollinations/openai-fast')
+  const fast = models.find((m) => m.id === 'openai-fast')
+  if (!fast) fail('缺少 openai-fast')
   if (!models.every((m) => Array.isArray(m.inputModalities))) fail('listModels 缺 inputModalities')
 
-  const rm = await a.resolveModel('pollinations', 'pollinations/openai-fast')
+  const rm = await a.resolveModel('pollinations', 'openai-fast')
   if (!rm.context || rm.context.contextWindow !== 128000) fail('resolveModel context 不对: ' + JSON.stringify(rm.context))
   if (!rm.defaultMaxTokens) fail('resolveModel defaultMaxTokens 缺失')
 
@@ -63,7 +63,7 @@ else {
   }
   try {
     const chunks = []
-    for await (const c of a.stream({ model: 'groq/llama-3.3-70b', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] })) {
+    for await (const c of a.stream({ model: 'llama-3.3-70b', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] })) {
       chunks.push(c)
     }
     const text = chunks.filter((c) => c.type === 'text-delta').map((c) => c.text).join('')

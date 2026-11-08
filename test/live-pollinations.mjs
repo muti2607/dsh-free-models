@@ -10,7 +10,7 @@ const fake = {
 }
 apply(fake, {})
 const chunks = []
-for await (const c of reg.stream({ model: 'pollinations/openai-fast', messages: [{ role: 'user', content: [{ type: 'text', text: '用一句中文打个招呼' }] }] })) {
+for await (const c of reg.stream({ model: 'openai-fast', messages: [{ role: 'user', content: [{ type: 'text', text: '用一句中文打个招呼' }] }] })) {
   chunks.push(c)
 }
 const text = chunks.filter((c) => c.type === 'text-delta').map((c) => c.text).join('')

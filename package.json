@@ -1,6 +1,6 @@
 {
   "name": "dsh-free-models",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "免密钥的免费模型接入：内置 pollinations，可通过配置添加任意 OpenAI 兼容端点（Groq / Cerebras / 硅基流动 / Ollama 等）。",

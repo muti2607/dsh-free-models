@@ -45,11 +45,6 @@ function resolveProviders(cfg) {
   return [...byId.values()]
 }
 
-/** 模型 id 在 picker 里的全局唯一形态：`<provider>/<model>`。 */
-function modelKey(providerId, modelId) {
-  return providerId + '/' + modelId
-}
-
 function num(v) {
   const n = Number(v)
   return Number.isFinite(n) && n > 0 ? n : 0
@@ -210,7 +205,7 @@ export function apply(ctx, config) {
       const out = []
       for (const p of list) {
         for (const m of p.models) {
-          out.push({ provider: p.id, id: modelKey(p.id, m.id), name: m.name || m.id, inputModalities: ['text'] })
+          out.push({ provider: p.id, id: m.id, name: m.name || m.id, inputModalities: ['text'] })
         }
       }
       return out
@@ -218,9 +213,11 @@ export function apply(ctx, config) {
 
     async resolveModel(provider, model) {
       const p = providers.find((x) => x.id === provider) || providers[0]
-      const key = modelKey(p.id, String(model || '').replace(new RegExp('^' + p.id + '/'), ''))
-      const m = p.models.find((x) => modelKey(p.id, x.id) === key) || p.models[0]
-      const out = { provider: p.id, id: key, name: (m && m.name) || key, inputModalities: ['text'] }
+      // 模型 id 用裸名（`openai-fast`），渠道由 provider 字段承载，
+      // 否则界面上会显示成 `pollinations/pollinations/openai-fast`。
+      const id = String(model || '').replace(new RegExp('^' + p.id + '/'), '')
+      const m = p.models.find((x) => x.id === id) || p.models[0]
+      const out = { provider: p.id, id: m ? m.id : id, name: (m && m.name) || id, inputModalities: ['text'] }
       if (m && num(m.contextWindow)) out.context = { contextWindow: num(m.contextWindow) }
       if (m && num(m.maxOutputTokens)) out.defaultMaxTokens = num(m.maxOutputTokens)
       return out
@@ -228,14 +225,15 @@ export function apply(ctx, config) {
 
     async prepareCall(provider, model) {
       const resolved = await this.resolveModel(provider, model)
-      return { model: resolved, stream: (options) => streamCall(provider, model, options) }
+      return { model: resolved, stream: (options) => streamCall(provider, resolved.id, options) }
     },
 
     async *stream(options) {
-      // 模型 id 形如 `<provider>/<model>`，据此路由到对应渠道
       const raw = String((options && options.model) || '')
-      const hit = providers.find((p) => raw.startsWith(p.id + '/'))
-      yield* streamCall(hit ? hit.id : providers[0].id, raw, options)
+      // 先按裸 id 找渠道；兼容调用方传 `provider/model` 的旧写法
+      let pid = providers.find((p) => p.models.some((m) => m.id === raw))?.id
+      if (!pid) pid = providers.find((p) => raw.startsWith(p.id + '/'))?.id
+      yield* streamCall(pid || providers[0].id, raw, options)
     },
   }
 
@@ -291,7 +289,7 @@ export function apply(ctx, config) {
             baseUrl: p.baseUrl,
             needsKey: !!p.apiKey,
             builtin: !!p.builtin,
-            models: p.models.map((m) => ({ id: modelKey(p.id, m.id), name: m.name || m.id, contextWindow: num(m.contextWindow) })),
+            models: p.models.map((m) => ({ id: m.id, provider: p.id, name: m.name || m.id, contextWindow: num(m.contextWindow) })),
           })),
         }
         const text = JSON.stringify(body)
