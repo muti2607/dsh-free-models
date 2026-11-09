@@ -2,7 +2,15 @@
  * 离线测试：适配器契约 + SSE 解析 + 自定义渠道。
  * Run: node test/verify-adapter.mjs
  */
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { apply } from '../index.js'
+
+// 隔离 DSH_HOME：避免读到用户真实保存的渠道 key，保证离线测试可重复
+const ISOLATED_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-test-'))
+process.env.DSH_HOME = ISOLATED_HOME
+process.on('exit', () => { try { fs.rmSync(ISOLATED_HOME, { recursive: true, force: true }) } catch { /* ignore */ } })
 
 const fail = (m) => { console.error('FAIL: ' + m); process.exitCode = 1 }
 
@@ -178,6 +186,22 @@ dispose()
     else process.env.DSH_HOME = prevHome
     fsMod.rmSync(home, { recursive: true, force: true })
   }
+}
+
+// ---- 9. 上游错误翻译：输入超长要给人话，不丢原始 JSON ----
+{
+  const { explainUpstreamError } = await import('../index.js')
+  const raw = '{"code":20015,"message":"number of input tokens (341246) has exceeded max_prompt_tokens (131072) limit.","data":null}'
+  const m = explainUpstreamError('siliconflow', 400, raw)
+  if (!/输入超长/.test(m)) fail('应识别为输入超长，实际: ' + m)
+  if (!m.includes('341,246')) fail('应带上实际 token 数，实际: ' + m)
+  if (!m.includes('131,072')) fail('应带上模型上限，实际: ' + m)
+  if (!/新会话|长上下文/.test(m)) fail('应给出可执行建议，实际: ' + m)
+  if (!explainUpstreamError('groq', 400, '{"error":{"message":"context_length_exceeded"}}').includes('上下文上限')) {
+    fail('通用超长文案也应识别')
+  }
+  const generic = explainUpstreamError('groq', 401, '{"error":{"message":"invalid api key"}}')
+  if (!generic.includes('HTTP 401') || !generic.includes('invalid api key')) fail('普通错误应保留原文，实际: ' + generic)
 }
 
 console.log(JSON.stringify({ ok: !process.exitCode }, null, 2))

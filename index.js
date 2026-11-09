@@ -146,9 +146,11 @@ const PRESET_TEMPLATES = [
     id: 'siliconflow', name: '硅基流动 (部分模型免费)',
     baseUrl: 'https://api.siliconflow.cn/v1',
     website: 'https://cloud.siliconflow.cn/account/ak',
+    // 实测 2026-11-09：服务端报 max_prompt_tokens (131072)，
+    // 即 128k 输入上限。之前写的 32768 会让宿主误判、压缩时机不对。
     models: [
-      { id: 'Qwen/Qwen3-8B', name: 'Qwen3 8B (免费)', contextWindow: 32768, maxOutputTokens: 8192 },
-      { id: 'THUDM/glm-4-9b-chat', name: 'GLM-4-9B (免费)', contextWindow: 32768, maxOutputTokens: 8192 },
+      { id: 'Qwen/Qwen3-8B', name: 'Qwen3 8B (免费)', contextWindow: 131072, maxOutputTokens: 8192 },
+      { id: 'THUDM/glm-4-9b-chat', name: 'GLM-4-9B (免费)', contextWindow: 131072, maxOutputTokens: 8192 },
     ],
   },
   {
@@ -217,6 +219,39 @@ function resolveProviders(cfg) {
 function num(v) {
   const n = Number(v)
   return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/**
+ * 把上游错误翻译成可执行的中文提示。
+ *
+ * 免费渠道常见的「输入超长」不该丢一段原始 JSON 给用户：
+ * 它意味着这轮会话累积的上下文已经超过该模型的窗口，
+ * 唯一有效的动作是换长上下文模型或开新会话。
+ */
+export function explainUpstreamError(provider, status, text) {
+  const raw = String(text || '')
+  let msg = ''
+  let code = ''
+  try {
+    const j = JSON.parse(raw)
+    msg = String((j && (j.message || j.msg || (j.error && (j.error.message || j.error.msg)))) || '')
+    code = String((j && (j.code || (j.error && j.error.code))) || '')
+  } catch { /* 非 JSON */ }
+  const combined = msg + ' ' + raw
+
+  const m = combined.match(/number of input tokens\s*\((\d+)\).*?max_prompt_tokens\s*\((\d+)\)/i)
+    || combined.match(/input[^)]*?\((\d+)\)[^)]*?exceed[^)]*?\((\d+)\)/i)
+  if (m) {
+    return `free-models: ${provider} 输入超长（本轮约 ${Number(m[1]).toLocaleString()} tokens，该模型上限 ${Number(m[2]).toLocaleString()}）。`
+      + '重试无用：请改选长上下文模型（如 Gemini / codebuddy 的 1M 窗口模型），或开一个新会话以清空累积历史。'
+  }
+  if (/context.?length|maximum context|too long|token.*(limit|exceed)|prompt.*too long/i.test(combined)) {
+    return `free-models: ${provider} 输入超过该模型的上下文上限。请换长上下文模型，或开新会话。`
+  }
+  if (code === '20015' || status === 413) {
+    return `free-models: ${provider} 输入超过该模型的上下文上限。请换长上下文模型，或开新会话。`
+  }
+  return `free-models: ${provider} HTTP ${status} ${msg || raw.slice(0, 200)}`
 }
 
 /**
@@ -429,7 +464,7 @@ export function apply(ctx, config) {
     })
     if (!response.ok) {
       const text = await response.text().catch(() => '')
-      throw new Error(`free-models: ${p.id} HTTP ${response.status} ${text.slice(0, 200)}`)
+      throw new Error(explainUpstreamError(p.id, response.status, text))
     }
     yield* readSse(response, options.signal)
   }
